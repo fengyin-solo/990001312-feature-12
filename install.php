@@ -52,7 +52,7 @@ try {
         FOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='收藏表'");
 
-    // 举报表
+    // 举报表（含协同指派、编辑锁、超时升级字段）
     $pdo->exec("CREATE TABLE IF NOT EXISTS `reports` (
         `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         `message_id` INT UNSIGNED NOT NULL COMMENT '被举报的留言ID',
@@ -61,6 +61,13 @@ try {
         `description` TEXT COMMENT '补充说明',
         `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0待处理, 1已处理-已删除, 2已处理-已忽略, 3已驳回',
         `processed_by` INT UNSIGNED DEFAULT NULL COMMENT '处理人管理员ID',
+        `assignee_id` INT UNSIGNED DEFAULT NULL COMMENT '指派处理人管理员ID',
+        `assigned_at` DATETIME DEFAULT NULL COMMENT '最近一次指派时间',
+        `locked_by` INT UNSIGNED DEFAULT NULL COMMENT '持有处理锁的管理员ID',
+        `locked_at` DATETIME DEFAULT NULL COMMENT '处理锁获取时间',
+        `priority` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '优先级: 0普通, 1一级, 2二级, 3三级升级',
+        `escalated_at` DATETIME DEFAULT NULL COMMENT '最近一次升级时间',
+        `deadline` DATETIME DEFAULT NULL COMMENT '当前级别处理截止时间',
         `processed_at` DATETIME DEFAULT NULL COMMENT '处理时间',
         `process_note` VARCHAR(500) DEFAULT NULL COMMENT '处理备注',
         `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '举报时间',
@@ -69,9 +76,38 @@ try {
         INDEX `idx_visitor_id` (`visitor_id`),
         INDEX `idx_status` (`status`),
         INDEX `idx_created` (`created_at`),
+        INDEX `idx_assignee` (`assignee_id`),
+        INDEX `idx_priority` (`priority`),
+        INDEX `idx_deadline` (`status`, `deadline`),
         FOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON DELETE CASCADE,
-        FOREIGN KEY (`processed_by`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+        FOREIGN KEY (`processed_by`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
+        FOREIGN KEY (`assignee_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL,
+        FOREIGN KEY (`locked_by`) REFERENCES `admins`(`id`) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报表'");
+
+    // 举报操作日志表
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `report_logs` (
+        `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        `report_id` INT UNSIGNED NOT NULL COMMENT '举报ID',
+        `admin_id` INT UNSIGNED DEFAULT NULL COMMENT '操作管理员ID（超时升级为NULL=系统）',
+        `action` VARCHAR(30) NOT NULL COMMENT '动作: assign指派, escalate升级, process处理, lock加锁, unlock释放',
+        `detail` VARCHAR(500) DEFAULT NULL COMMENT '动作详情',
+        `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+        INDEX `idx_report_id` (`report_id`),
+        INDEX `idx_created` (`created_at`),
+        FOREIGN KEY (`report_id`) REFERENCES `reports`(`id`) ON DELETE CASCADE,
+        FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='举报操作日志表'");
+
+    // 新举报自动设置初始截止时间（举报时间 + 24 小时，与 config/report.php 一级阈值一致）
+    $pdo->exec("DROP TRIGGER IF EXISTS `tr_reports_before_insert`");
+    $pdo->exec("CREATE TRIGGER `tr_reports_before_insert` BEFORE INSERT ON `reports`
+        FOR EACH ROW
+        BEGIN
+            IF NEW.`deadline` IS NULL THEN
+                SET NEW.`deadline` = DATE_ADD(NEW.`created_at`, INTERVAL 24 HOUR);
+            END IF;
+        END");
 
     // 插入默认管理员 admin/admin123
     $hash = password_hash('admin123', PASSWORD_DEFAULT);

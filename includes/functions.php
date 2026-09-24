@@ -221,8 +221,23 @@ function submitReport($messageId, $reportType, $description = '') {
         throw new Exception('您已经举报过这条留言了');
     }
 
-    $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description) VALUES (?, ?, ?, ?)");
-    $stmt->execute([$messageId, $visitorId, $reportType, $description]);
+    // 初始处理截止时间（一级阈值），保证超时升级能对新举报生效
+    $deadline = null;
+    $reportConfigFile = __DIR__ . '/report.php';
+    if (is_file($reportConfigFile)) {
+        require_once $reportConfigFile;
+        if (function_exists('reportDeadline')) {
+            $deadline = reportDeadline(date('Y-m-d H:i:s'), 0);
+        }
+    }
+
+    if ($deadline) {
+        $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description, deadline) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$messageId, $visitorId, $reportType, $description, $deadline]);
+    } else {
+        $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$messageId, $visitorId, $reportType, $description]);
+    }
 
     return $db->lastInsertId();
 }

@@ -68,10 +68,30 @@ include __DIR__ . '/includes/header.php';
                     <span class="favorite-icon"><?= $isFav ? '⭐' : '☆' ?></span>
                     <span class="favorite-text"><?= $isFav ? '已收藏' : '收藏' ?></span>
                 </button>
-                <?php $hasReported = hasReported($msg['id']); ?>
-                <button class="btn <?= $hasReported ? 'btn-secondary' : 'btn-danger' ?> report-btn" data-message-id="<?= $msg['id'] ?>" onclick="openReportModal(<?= $msg['id'] ?>)" <?= $hasReported ? 'disabled' : '' ?>>
+                <?php
+                // 前台按钮初始状态与后台处置状态保持同一口径，JS 还会再 check 一次
+                $hasReported = hasReported($msg['id']);
+                $visitorReport = null;
+                if ($hasReported) {
+                    $vstmt = $db->prepare(
+                        "SELECT status, process_note FROM reports
+                         WHERE visitor_id = ? AND message_id = ? ORDER BY id DESC LIMIT 1"
+                    );
+                    $vstmt->execute([getVisitorId(), $msg['id']]);
+                    $visitorReport = $vstmt->fetch();
+                }
+                $vrStatus = $visitorReport ? (int)$visitorReport['status'] : -1;
+                $vrTextMap = [0 => '已举报·待处理', 1 => '举报已采纳', 2 => '举报已忽略', 3 => '举报已驳回'];
+                $vrText = $hasReported ? ($vrTextMap[$vrStatus] ?? '已举报') : '举报';
+                ?>
+                <button class="btn <?= $hasReported ? 'btn-secondary' : 'btn-danger' ?> report-btn"
+                        data-message-id="<?= $msg['id'] ?>"
+                        data-report-status="<?= $vrStatus ?>"
+                        onclick="openReportModal(<?= $msg['id'] ?>)"
+                        <?= $hasReported ? 'disabled' : '' ?>
+                        title="<?= $hasReported && $visitorReport['process_note'] ? cleanInput($visitorReport['process_note'], ENT_QUOTES) : '' ?>">
                     <span>🚩</span>
-                    <span class="report-text"><?= $hasReported ? '已举报' : '举报' ?></span>
+                    <span class="report-text"><?= $vrText ?></span>
                 </button>
                 <a href="submit.php" class="btn btn-primary">发布留言</a>
             </div>

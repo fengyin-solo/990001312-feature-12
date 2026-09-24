@@ -277,16 +277,11 @@ function submitReport() {
             showToast(result.msg, 'success');
             closeReportModal();
 
-            const reportBtn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
-            if (reportBtn) {
-                reportBtn.disabled = true;
-                reportBtn.classList.remove('btn-danger');
-                reportBtn.classList.add('btn-secondary');
-                const reportText = reportBtn.querySelector('.report-text');
-                if (reportText) {
-                    reportText.textContent = '已举报';
-                }
-            }
+            applyReportState(messageId, {
+                reported: true,
+                status: 0,
+                status_text: '已举报·待处理'
+            });
         } else {
             showToast(result.msg || '举报失败', 'error');
         }
@@ -301,6 +296,52 @@ function submitReport() {
     });
 }
 
+/**
+ * 根据后台返回的举报状态更新前台按钮（与后台处置结果一致）
+ */
+function syncReportButton(messageId) {
+    const formData = new FormData();
+    formData.append('message_id', messageId);
+    formData.append('action', 'check');
+
+    fetch('api/report.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.code !== 0 || !result.data) return;
+        applyReportState(messageId, result.data);
+    })
+    .catch(() => {});
+}
+
+function applyReportState(messageId, state) {
+    const reportBtn = document.querySelector('.report-btn[data-message-id="' + messageId + '"]');
+    if (!reportBtn) return;
+
+    if (state.reported) {
+        reportBtn.disabled = true;
+        reportBtn.classList.remove('btn-danger');
+        reportBtn.classList.add('btn-secondary');
+        if (state.note) reportBtn.title = state.note;
+    } else {
+        reportBtn.disabled = false;
+        reportBtn.classList.remove('btn-secondary');
+        reportBtn.classList.add('btn-danger');
+    }
+    const reportText = reportBtn.querySelector('.report-text');
+    if (reportText && state.status_text) {
+        reportText.textContent = state.status_text;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     initReportForm();
+
+    // 详情页：用后台最新处置状态同步按钮（已删除/已忽略/已驳回分别展示）
+    const reportBtn = document.querySelector('.report-btn');
+    if (reportBtn) {
+        syncReportButton(reportBtn.dataset.messageId);
+    }
 });

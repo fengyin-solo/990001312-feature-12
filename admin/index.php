@@ -63,7 +63,7 @@ include __DIR__ . '/header.php';
             <a href="index.php?status=0" class="sidebar-link">⏳ 待审核 <?= $pendingCount > 0 ? "($pendingCount)" : '' ?></a>
             <a href="reports.php" class="sidebar-link">🚩 举报管理</a>
             <?php $pendingReportCount = getPendingReportCount(); ?>
-            <a href="reports.php?status=0" class="sidebar-link">⏳ 待处理举报 <?= $pendingReportCount > 0 ? "($pendingReportCount)" : '' ?></a>
+            <a href="reports.php?status=0" class="sidebar-link">⏳ 待处理举报 <?= $pendingReportCount > 0 ? "(<span id=\"sidebarPendingReport\">$pendingReportCount</span>)" : '' ?></a>
             <a href="../index.php" class="sidebar-link" target="_blank">🌐 查看前台</a>
             <a href="logout.php" class="sidebar-link">🚪 退出登录</a>
         </nav>

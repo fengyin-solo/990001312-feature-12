@@ -17,10 +17,40 @@ if ($messageId <= 0) {
 
 $db = getDB();
 
+/**
+ * 前台看到的举报结果与后台处置保持同一口径：
+ * 状态1（删除）-> 已采纳，留言已删除；状态2 -> 已忽略；状态3 -> 已驳回
+ */
+function getVisitorReportView($db, $messageId) {
+    $visitorId = getVisitorId();
+    $stmt = $db->prepare(
+        "SELECT status, process_note, processed_at FROM reports
+         WHERE visitor_id = ? AND message_id = ? ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([$visitorId, $messageId]);
+    $report = $stmt->fetch();
+    if (!$report) {
+        return ['reported' => false, 'status' => null, 'status_text' => '', 'note' => ''];
+    }
+
+    $textMap = [
+        0 => '已举报，等待处理',
+        1 => '举报已采纳，留言已删除',
+        2 => '举报已忽略',
+        3 => '举报已驳回',
+    ];
+    return [
+        'reported' => true,
+        'status' => (int)$report['status'],
+        'status_text' => $textMap[(int)$report['status']] ?? '已举报',
+        'note' => $report['process_note'] ?? '',
+        'processed_at' => $report['processed_at'],
+    ];
+}
+
 try {
     if ($action === 'check') {
-        $reported = hasReported($messageId);
-        jsonResponse(0, '查询成功', ['reported' => $reported]);
+        jsonResponse(0, '查询成功', getVisitorReportView($db, $messageId));
     } elseif ($action === 'submit') {
         $reportType = cleanInput($_POST['report_type'] ?? '');
         $description = cleanInput($_POST['description'] ?? '');
