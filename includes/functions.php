@@ -221,16 +221,207 @@ function submitReport($messageId, $reportType, $description = '') {
         throw new Exception('您已经举报过这条留言了');
     }
 
-    $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description) VALUES (?, ?, ?, ?)");
-    $stmt->execute([$messageId, $visitorId, $reportType, $description]);
+    $settings = getReportSettings();
+    $dueAt = getInitialDueAt(date('Y-m-d H:i:s'), $settings);
+
+    $stmt = $db->prepare("INSERT INTO reports (message_id, visitor_id, report_type, description, due_at) VALUES (?, ?, ?, ?, ?)");
+    $stmt->execute([$messageId, $visitorId, $reportType, $description, $dueAt]);
 
     return $db->lastInsertId();
 }
 
 /**
- * 获取待处理举报数量
+ * 获取待处理举报数量（仅未完成处置的举报）
  */
 function getPendingReportCount() {
     $db = getDB();
     return $db->query("SELECT COUNT(*) FROM reports WHERE status = 0")->fetchColumn();
+}
+
+/* ===================== 协同指派与超时升级 ===================== */
+
+/**
+ * 获取全部管理员（指派下拉用）
+ */
+function getAdminList() {
+    $db = getDB();
+    return $db->query("SELECT id, username FROM admins ORDER BY id ASC")->fetchAll();
+}
+
+/**
+ * 获取举报功能设置（阈值、升级对象），进程内缓存
+ */
+function getReportSettings() {
+    static $settings = null;
+    if ($settings !== null) return $settings;
+    $db = getDB();
+    $stmt = $db->query("SELECT * FROM report_settings WHERE id = 1");
+    $settings = $stmt->fetch();
+    if (!$settings) {
+        $db->exec("INSERT IGNORE INTO report_settings (id) VALUES (1)");
+        $stmt = $db->query("SELECT * FROM report_settings WHERE id = 1");
+        $settings = $stmt->fetch();
+    }
+    return $settings;
+}
+
+/**
+ * 保存举报设置
+ */
+function saveReportSettings($esc1Hours, $esc2Hours, $esc1AdminId, $esc2AdminId) {
+    $db = getDB();
+    $stmt = $db->prepare("UPDATE report_settings
+        SET escalation1_hours = ?, escalation2_hours = ?,
+            escalation1_admin_id = ?, escalation2_admin_id = ?
+        WHERE id = 1");
+    $stmt->execute([
+        max(0, intval($esc1Hours)),
+        max(0, intval($esc2Hours)),
+        $esc1AdminId ? intval($esc1AdminId) : null,
+        $esc2AdminId ? intval($esc2AdminId) : null,
+    ]);
+}
+
+/**
+ * 举报操作留痕
+ */
+function addReportLog($reportId, $adminId, $action, $detail = '') {
+    $db = getDB();
+    $stmt = $db->prepare("INSERT INTO report_logs (report_id, admin_id, action, detail) VALUES (?, ?, ?, ?)");
+    $stmt->execute([
+        intval($reportId),
+        $adminId ? intval($adminId) : null,
+        $action,
+        mb_substr((string)$detail, 0, 500),
+    ]);
+}
+
+/**
+ * 升级级别文字
+ */
+function getEscalationLevelLabel($level) {
+    $map = [0 => '普通', 1 => '一级升级', 2 => '二级升级'];
+    return $map[$level] ?? '普通';
+}
+
+/**
+ * 升级级别样式类
+ */
+function getEscalationLevelClass($level) {
+    $map = [0 => 'normal', 1 => 'esc-level1', 2 => 'esc-level2'];
+    return $map[$level] ?? 'normal';
+}
+
+/**
+ * 根据创建时间与设置计算初始截止时间（一级阈值）
+ */
+function getInitialDueAt($createdAt, $settings = null) {
+    $settings = $settings ?: getReportSettings();
+    $h1 = intval($settings['escalation1_hours']);
+    if ($h1 <= 0) return null;
+    return date('Y-m-d H:i:s', strtotime($createdAt) + $h1 * 3600);
+}
+
+/**
+ * 超时升级扫描：按阈值对待处理举报逐级升级，重新指派并记录日志
+ * 利用 MySQL 命名锁串行化，避免多个入口（定时任务/后台触发）重复升级
+ * 返回本次升级的条数
+ */
+function runReportEscalations() {
+    $db = getDB();
+    // MySQL 命名锁串行化，避免多个入口（定时任务/后台触发）重复升级；
+    // 不支持 GET_LOCK 的数据库（如 SQLite 测试环境）直接跳过锁
+    $lock = null;
+    try {
+        $lock = $db->query("SELECT GET_LOCK('report_escalation', 2)")->fetchColumn();
+    } catch (Exception $e) {
+        $lock = 1;
+    }
+    if (!$lock) return 0;
+
+    $count = 0;
+    try {
+        $settings = getReportSettings();
+        $h1 = intval($settings['escalation1_hours']);
+        $h2 = intval($settings['escalation2_hours']);
+
+        $stmt = $db->query("SELECT id, created_at, escalation_level, due_at
+            FROM reports
+            WHERE status = 0 AND due_at IS NOT NULL
+            ORDER BY due_at ASC
+            LIMIT 200");
+        $overdue = array_filter($stmt->fetchAll(), function ($r) {
+            return strtotime($r['due_at']) <= time();
+        });
+
+        foreach ($overdue as $r) {
+            $ageHours = (time() - strtotime($r['created_at'])) / 3600;
+            $newLevel = intval($r['escalation_level']);
+            $newDue = null;
+            $newAssignee = null;
+
+            // 逐级匹配：达到二级阈值直接升到二级，否则升到一级
+            if ($h2 > 0 && $newLevel < 2 && $ageHours >= $h2) {
+                $newLevel = 2;
+                $newAssignee = $settings['escalation2_admin_id'];
+            } elseif ($h1 > 0 && $newLevel < 1 && $ageHours >= $h1) {
+                $newLevel = 1;
+                $newAssignee = $settings['escalation1_admin_id'];
+            } else {
+                // 已到当前级别截止时间但没有更高级别阈值，停止继续升级
+                continue;
+            }
+
+            if ($newLevel === 1 && $h2 > 0) {
+                $newDue = date('Y-m-d H:i:s', strtotime($r['created_at']) + $h2 * 3600);
+            }
+
+            $up = $db->prepare("UPDATE reports
+                SET escalation_level = ?, escalated_at = ?, due_at = ?, assigned_to = ?
+                WHERE id = ? AND status = 0");
+            $up->execute([$newLevel, date('Y-m-d H:i:s'), $newDue, $newAssignee, $r['id']]);
+
+            if ($up->rowCount() > 0) {
+                addReportLog($r['id'], null, 'escalate',
+                    '超过处理时限，自动升级为' . getEscalationLevelLabel($newLevel) .
+                    ($newAssignee ? '，已重新指派处理人' : ''));
+                $count++;
+            }
+        }
+    } finally {
+        try { $db->query("SELECT RELEASE_LOCK('report_escalation')"); } catch (Exception $e) {}
+    }
+    return $count;
+}
+
+/**
+ * 获取当前访客对某条留言的举报记录（含处理状态），无则 null
+ */
+function getVisitorReport($messageId) {
+    $visitorId = getVisitorId();
+    $db = getDB();
+    $stmt = $db->prepare("SELECT * FROM reports WHERE visitor_id = ? AND message_id = ?");
+    $stmt->execute([$visitorId, $messageId]);
+    $report = $stmt->fetch();
+    if ($report) {
+        $report['status_label'] = getReportStatusLabel($report['status']);
+        $report['status_class'] = getReportStatusClass($report['status']);
+        $report['escalation_label'] = getEscalationLevelLabel($report['escalation_level']);
+    }
+    return $report ?: null;
+}
+
+/**
+ * 获取当前访客的全部举报（我的举报页用）
+ */
+function getVisitorReports() {
+    $visitorId = getVisitorId();
+    $db = getDB();
+    $stmt = $db->prepare("SELECT r.*, m.title AS message_title, m.type AS message_type
+        FROM reports r
+        LEFT JOIN messages m ON r.message_id = m.id
+        WHERE r.visitor_id = ?
+        ORDER BY r.created_at DESC");
+    $stmt->execute([$visitorId]);
+    return $stmt->fetchAll();
 }

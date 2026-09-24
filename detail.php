@@ -68,13 +68,43 @@ include __DIR__ . '/includes/header.php';
                     <span class="favorite-icon"><?= $isFav ? '⭐' : '☆' ?></span>
                     <span class="favorite-text"><?= $isFav ? '已收藏' : '收藏' ?></span>
                 </button>
-                <?php $hasReported = hasReported($msg['id']); ?>
-                <button class="btn <?= $hasReported ? 'btn-secondary' : 'btn-danger' ?> report-btn" data-message-id="<?= $msg['id'] ?>" onclick="openReportModal(<?= $msg['id'] ?>)" <?= $hasReported ? 'disabled' : '' ?>>
+                <?php $myReport = getVisitorReport($msg['id']); ?>
+                <?php if ($myReport): ?>
+                <button class="btn btn-secondary report-btn" data-message-id="<?= $msg['id'] ?>" disabled>
                     <span>🚩</span>
-                    <span class="report-text"><?= $hasReported ? '已举报' : '举报' ?></span>
+                    <span class="report-text"><?= getReportStatusLabel($myReport['status']) ?></span>
                 </button>
+                <?php else: ?>
+                <button class="btn btn-danger report-btn" data-message-id="<?= $msg['id'] ?>" onclick="openReportModal(<?= $msg['id'] ?>)">
+                    <span>🚩</span>
+                    <span class="report-text">举报</span>
+                </button>
+                <?php endif; ?>
+                <a href="my_reports.php" class="btn btn-secondary">我的举报</a>
                 <a href="submit.php" class="btn btn-primary">发布留言</a>
             </div>
+            <?php if ($myReport): ?>
+            <div class="report-result" style="margin-top:12px; padding:10px 14px; background:#f9fafb; border-left:3px solid #3b82f6; border-radius:4px; font-size:.9rem;">
+                <div>
+                    🚩 <strong>我的举报：</strong>
+                    <span class="status-badge report-status-<?= getReportStatusClass($myReport['status']) ?>"><?= getReportStatusLabel($myReport['status']) ?></span>
+                    <?php if ($myReport['escalation_level'] > 0 && $myReport['status'] == 0): ?>
+                    <span style="color:#b45309; margin-left:6px;">（<?= getEscalationLevelLabel($myReport['escalation_level']) ?>，正在加急处理）</span>
+                    <?php endif; ?>
+                </div>
+                <?php if ($myReport['status'] == 1): ?>
+                <div class="text-muted">该留言已被平台删除，感谢你的监督。</div>
+                <?php elseif ($myReport['status'] == 0): ?>
+                <div class="text-muted">平台正在核实处理，请耐心等待。<a href="my_reports.php">查看全部举报记录 →</a></div>
+                <?php endif; ?>
+                <?php if ($myReport['process_note'] !== null && $myReport['process_note'] !== ''): ?>
+                <div style="margin-top:4px;"><strong>处理备注：</strong><?= nl2br(cleanInput($myReport['process_note'])) ?></div>
+                <?php endif; ?>
+                <?php if ($myReport['processed_at']): ?>
+                <div class="text-muted">处理时间：<?= cleanInput($myReport['processed_at']) ?></div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
         </div>
     </div>
 </section>
